@@ -1,114 +1,74 @@
-#
-# NOTE: THIS DOCKERFILE IS GENERATED VIA "update.sh"
-#
-# PLEASE DO NOT EDIT IT DIRECTLY.
-#
-FROM debian:bullseye-slim
+FROM openjdk:8u121-jdk-alpine
 
-LABEL maintainer="NGINX Docker Maintainers <docker-maint@nginx.com>"
+RUN apk add --no-cache git openssh-client curl unzip bash ttf-dejavu coreutils
 
-ENV NGINX_VERSION   1.21.6
-ENV NJS_VERSION     0.7.3
-ENV PKG_RELEASE     1~bullseye
+ARG user=jenkins
+ARG group=jenkins
+ARG uid=1000
+ARG gid=1000
+ARG http_port=8080
+ARG agent_port=50000
 
-RUN set -x \
-# create nginx user/group first, to be consistent throughout docker variants
-    && addgroup --system --gid 101 nginx \
-    && adduser --system --disabled-login --ingroup nginx --no-create-home --home /nonexistent --gecos "nginx user" --shell /bin/false --uid 101 nginx \
-    && apt-get update \
-    && apt-get install --no-install-recommends --no-install-suggests -y gnupg1 ca-certificates \
-    && \
-    NGINX_GPGKEY=573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62; \
-    found=''; \
-    for server in \
-        hkp://keyserver.ubuntu.com:80 \
-        pgp.mit.edu \
-    ; do \
-        echo "Fetching GPG key $NGINX_GPGKEY from $server"; \
-        apt-key adv --keyserver "$server" --keyserver-options timeout=10 --recv-keys "$NGINX_GPGKEY" && found=yes && break; \
-    done; \
-    test -z "$found" && echo >&2 "error: failed to fetch GPG key $NGINX_GPGKEY" && exit 1; \
-    apt-get remove --purge --auto-remove -y gnupg1 && rm -rf /var/lib/apt/lists/* \
-    && dpkgArch="$(dpkg --print-architecture)" \
-    && nginxPackages=" \
-        nginx=${NGINX_VERSION}-${PKG_RELEASE} \
-        nginx-module-xslt=${NGINX_VERSION}-${PKG_RELEASE} \
-        nginx-module-geoip=${NGINX_VERSION}-${PKG_RELEASE} \
-        nginx-module-image-filter=${NGINX_VERSION}-${PKG_RELEASE} \
-        nginx-module-njs=${NGINX_VERSION}+${NJS_VERSION}-${PKG_RELEASE} \
-    " \
-    && case "$dpkgArch" in \
-        amd64|arm64) \
-# arches officialy built by upstream
-            echo "deb https://nginx.org/packages/mainline/debian/ bullseye nginx" >> /etc/apt/sources.list.d/nginx.list \
-            && apt-get update \
-            ;; \
-        *) \
-# we're on an architecture upstream doesn't officially build for
-# let's build binaries from the published source packages
-            echo "deb-src https://nginx.org/packages/mainline/debian/ bullseye nginx" >> /etc/apt/sources.list.d/nginx.list \
-            \
-# new directory for storing sources and .deb files
-            && tempDir="$(mktemp -d)" \
-            && chmod 777 "$tempDir" \
-# (777 to ensure APT's "_apt" user can access it too)
-            \
-# save list of currently-installed packages so build dependencies can be cleanly removed later
-            && savedAptMark="$(apt-mark showmanual)" \
-            \
-# build .deb files from upstream's source packages (which are verified by apt-get)
-            && apt-get update \
-            && apt-get build-dep -y $nginxPackages \
-            && ( \
-                cd "$tempDir" \
-                && DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)" \
-                    apt-get source --compile $nginxPackages \
-            ) \
-# we don't remove APT lists here because they get re-downloaded and removed later
-            \
-# reset apt-mark's "manual" list so that "purge --auto-remove" will remove all build dependencies
-# (which is done after we install the built packages so we don't have to redownload any overlapping dependencies)
-            && apt-mark showmanual | xargs apt-mark auto > /dev/null \
-            && { [ -z "$savedAptMark" ] || apt-mark manual $savedAptMark; } \
-            \
-# create a temporary local APT repo to install from (so that dependency resolution can be handled by APT, as it should be)
-            && ls -lAFh "$tempDir" \
-            && ( cd "$tempDir" && dpkg-scanpackages . > Packages ) \
-            && grep '^Package: ' "$tempDir/Packages" \
-            && echo "deb [ trusted=yes ] file://$tempDir ./" > /etc/apt/sources.list.d/temp.list \
-# work around the following APT issue by using "Acquire::GzipIndexes=false" (overriding "/etc/apt/apt.conf.d/docker-gzip-indexes")
-#   Could not open file /var/lib/apt/lists/partial/_tmp_tmp.ODWljpQfkE_._Packages - open (13: Permission denied)
-#   ...
-#   E: Failed to fetch store:/var/lib/apt/lists/partial/_tmp_tmp.ODWljpQfkE_._Packages  Could not open file /var/lib/apt/lists/partial/_tmp_tmp.ODWljpQfkE_._Packages - open (13: Permission denied)
-            && apt-get -o Acquire::GzipIndexes=false update \
-            ;; \
-    esac \
-    \
-    && apt-get install --no-install-recommends --no-install-suggests -y \
-                        $nginxPackages \
-                        gettext-base \
-                        curl \
-    && apt-get remove --purge --auto-remove -y && rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/nginx.list \
-    \
-# if we have leftovers from building, let's purge them (including extra, unnecessary build deps)
-    && if [ -n "$tempDir" ]; then \
-        apt-get purge -y --auto-remove \
-        && rm -rf "$tempDir" /etc/apt/sources.list.d/temp.list; \
-    fi \
-# forward request and error logs to docker log collector
-    && ln -sf /dev/stdout /var/log/nginx/access.log \
-    && ln -sf /dev/stderr /var/log/nginx/error.log \
-# create a docker-entrypoint.d directory
-    && mkdir /docker-entrypoint.d
+ENV JENKINS_HOME /var/jenkins_home
+ENV JENKINS_SLAVE_AGENT_PORT ${agent_port}
 
-COPY docker-entrypoint.sh /
-COPY 10-listen-on-ipv6-by-default.sh /docker-entrypoint.d
-COPY 20-envsubst-on-templates.sh /docker-entrypoint.d
-COPY 30-tune-worker-processes.sh /docker-entrypoint.d
-ENTRYPOINT ["/docker-entrypoint.sh"]
+# Jenkins is run with user `jenkins`, uid = 1000
+# If you bind mount a volume from the host or a data container, 
+# ensure you use the same uid
+RUN addgroup -g ${gid} ${group} \
+    && adduser -h "$JENKINS_HOME" -u ${uid} -G ${group} -s /bin/bash -D ${user}
 
-EXPOSE 80
+# Jenkins home directory is a volume, so configuration and build history 
+# can be persisted and survive image upgrades
+VOLUME /var/jenkins_home
 
-STOPSIGNAL SIGQUIT
+# `/usr/share/jenkins/ref/` contains all reference configuration we want 
+# to set on a fresh new installation. Use it to bundle additional plugins 
+# or config file with your custom jenkins Docker image.
+RUN mkdir -p /usr/share/jenkins/ref/init.groovy.d
 
-CMD ["nginx", "-g", "daemon off;"]
+ENV TINI_VERSION 0.14.0
+ENV TINI_SHA 6c41ec7d33e857d4779f14d9c74924cab0c7973485d2972419a3b7c7620ff5fd
+
+# Use tini as subreaper in Docker container to adopt zombie processes 
+RUN curl -fsSL https://github.com/krallin/tini/releases/download/v${TINI_VERSION}/tini-static-amd64 -o /bin/tini && chmod +x /bin/tini \
+  && echo "$TINI_SHA  /bin/tini" | sha256sum -c -
+
+COPY init.groovy /usr/share/jenkins/ref/init.groovy.d/tcp-slave-agent-port.groovy
+
+# jenkins version being bundled in this docker image
+ARG JENKINS_VERSION
+ENV JENKINS_VERSION ${JENKINS_VERSION:-2.60.3}
+
+# jenkins.war checksum, download will be validated using it
+ARG JENKINS_SHA=2d71b8f87c8417f9303a73d52901a59678ee6c0eefcf7325efed6035ff39372a
+
+# Can be used to customize where jenkins.war get downloaded from
+ARG JENKINS_URL=https://repo.jenkins-ci.org/public/org/jenkins-ci/main/jenkins-war/${JENKINS_VERSION}/jenkins-war-${JENKINS_VERSION}.war
+
+# could use ADD but this one does not check Last-Modified header neither does it allow to control checksum 
+# see https://github.com/docker/docker/issues/8331
+RUN curl -fsSL ${JENKINS_URL} -o /usr/share/jenkins/jenkins.war \
+  && echo "${JENKINS_SHA}  /usr/share/jenkins/jenkins.war" | sha256sum -c -
+
+ENV JENKINS_UC https://updates.jenkins.io
+ENV JENKINS_UC_EXPERIMENTAL=https://updates.jenkins.io/experimental
+RUN chown -R ${user} "$JENKINS_HOME" /usr/share/jenkins/ref
+
+# for main web interface:
+EXPOSE ${http_port}
+
+# will be used by attached slave agents:
+EXPOSE ${agent_port}
+
+ENV COPY_REFERENCE_FILE_LOG $JENKINS_HOME/copy_reference_file.log
+
+USER ${user}
+
+COPY jenkins-support /usr/local/bin/jenkins-support
+COPY jenkins.sh /usr/local/bin/jenkins.sh
+ENTRYPOINT ["/bin/tini", "--", "/usr/local/bin/jenkins.sh"]
+
+# from a derived Dockerfile, can use `RUN plugins.sh active.txt` to setup /usr/share/jenkins/ref/plugins from a support bundle
+COPY plugins.sh /usr/local/bin/plugins.sh
+COPY install-plugins.sh /usr/local/bin/install-plugins.sh
