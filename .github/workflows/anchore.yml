@@ -6,10 +6,10 @@ jobs:
     steps:
     - uses: actions/checkout@v1
     - name: Docker Build
-      run: docker build . --file Dockerfile --tag testrepo/testimage1:latest
+      run: docker build . --file Dockerfile --tag testrepo/testimage:latest
     - uses: anchore/scan-action@v1
       with:
-        image-reference: "testrepo/testimage1:latest"
+        image-reference: "testrepo/testimage:latest"
         dockerfile-path: "./Dockerfile"
         fail-build: false
     - name: Upload artifact
